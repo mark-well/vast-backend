@@ -57,14 +57,17 @@ def extract_block_text_save_to_file():
             f.write(json.dumps(block))
             f.write("\n")
 
-def main():
-    # extract_text_from_pdf("sample.pdf")
-    # extract_block_text_save_to_file()
+def extract_chunks():
     blocks = extract_block_of_text_from_pdf("sample.pdf")
     chunks = chunk_blocks(blocks)
     for chunk in chunks:
         print(chunk)
-        print("\n")
+        print() 
+
+def main():
+    # extract_text_from_pdf("sample.pdf")
+    # extract_block_text_save_to_file()
+    extract_chunks()
 
 if __name__ == "__main__":
-    main()
+    main()  
