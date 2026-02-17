@@ -1,0 +1,50 @@
+{
+    "id": 1,
+    "title": "Subject Title",
+    "modules": [
+        {
+            "id": 1,
+            "name": "Module 1",
+            "contents": [
+                {
+                    "id": 1,
+                    "block_type": "paragraph",
+                    "content": "This is a standalone paragraph"
+                },
+                {
+                    "id": 2,
+                    "block_type": "paragraph",
+                    "title": "Hello",
+                    "content": "This is a paragraph with a title or a heading"
+                },
+                {
+                    "id": 3,
+                    "block_type": "list",
+                    "list_type": "unorderedList",
+                    "content": [
+                        "This is a list item number 1",
+                        "This is a list item number 2",
+                        "This is a list item number 3"
+                    ]
+                },
+                {
+                    "id": 4,
+                    "block_type": "orderedList",
+                    "content": [
+                        "This is a list item number 1",
+                        "This is a list item number 2",
+                        "This is a list item number 3"
+                    ]
+                }
+            ]
+        }
+    ],
+    "flashcards": [
+        {
+            "id": 1,
+            "front": "Flashcard's front",
+            "back": "flashcard's back"
+        }
+    ],
+    "notes": "Some notes"
+}
