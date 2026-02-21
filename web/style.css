@@ -1,0 +1,27 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    padding: 1rem;
+}
+
+.fetchButton {
+    margin-bottom: 1rem;
+    padding: 0.5rem 1rem;
+}
+
+.progressbar {
+    width: 300px;
+    height: 18px;
+    background-color: gray;
+}
+
+.progress {
+    height: 100%;
+    width: 0%;
+    background-color: aquamarine;
+    transition: all 50ms ease-out;
+}

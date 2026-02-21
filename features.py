@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 import re
 import httpx
 import asyncio
+import io
 
 # Load environment variables
 load_dotenv()
@@ -31,8 +32,8 @@ def extract_text_from_pdf(pdf):
 # Extract a block of text from pdf
 def extract_block_of_text_from_pdf(pdf):
     blocks=[]
-    with pdfplumber.open(pdf) as pdf:
-        for page in pdf.pages:
+    with pdfplumber.open(io.BytesIO(pdf)) as pdff:
+        for page in pdff.pages:
             for line in page.extract_text_lines():
                 blocks.append({
                     "text": line["text"],
@@ -75,8 +76,8 @@ def extract_block_text_save_to_file():
             f.write(json.dumps(block))
             f.write("\n")
 
-def extract_chunks():
-    blocks = extract_block_of_text_from_pdf("sample2.pdf")
+def extract_chunks(pdf):
+    blocks = extract_block_of_text_from_pdf(pdf)
     chunks = chunk_blocks(blocks)
     return chunks
 
@@ -92,12 +93,11 @@ def parse_json(content):
 # Generate flashcards from chunks (uses AI)
 async def generate_flashcard(chunk):
     promt = f"""
-Create ONE flashcard from the text. flashcard must be short. id is incremental
+Create ONE flashcard from the text. flashcard must be short.
 Return ONLY JSON.
 Schema:
 [
     {{
-        "id": int,
         "front": "string",
         "back": "string"
     }}
@@ -137,47 +137,38 @@ async def safe_generate(chunk):
         return await generate_flashcard(chunk)
 
 async def generate_flashcards_parallel(chunks):
-    # all_cards = []
-    # tasks = [
-    #     safe_generate(chunk)
-    #     for chunk in chunks
-    # ]
-
-    # result = await asyncio.gather(*tasks, return_exceptions=True)
-
-    # for r in result:
-    #     if isinstance(r, Exception):
-    #         print("Error: ", r)
-    #         continue
-    #     all_cards.extend(r)
-    # return all_cards
-
     sent = 0
     max_cards = 10
-    # Create actual tasks
-    tasks = [
-        asyncio.create_task(safe_generate(chunk))
-        for chunk in chunks
-    ]
+    tasks = [asyncio.create_task(safe_generate(chunk)) for chunk in chunks ]
 
-    # Process results as they finish
-    for future in asyncio.as_completed(tasks):
-        try:
-            result = await future
-        except Exception as e:
-            print("Error:", e)
-            continue
+    try:
+        for future in asyncio.as_completed(tasks):
+            try:
+                result = await future
+                if not result:
+                    continue
 
-        if not result:
-            continue
+                for card in result:
+                    if sent >= max_cards:
+                        yield "data: {\"done\": true}\n\n"
+                        return
+                    
+                    yield f"data: {json.dumps(card)}\n\n"
+                    sent += 1
+            
+            except Exception as e:
+                print(f"Task falied: {e}")
+                continue
 
-        for card in result:
+        yield "data: {\"done\": true}\n\n"
 
-            if sent >= max_cards:
-                return  # stop streaming
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
 
-            yield f"data: {json.dumps(card)}\n\n"
-            sent += 1
+            if task:
+                await asyncio.gather(*tasks, return_exceptions=True)
 
 # Generate module blocks from chunks (uses AI)
 async def generate_module(chunk):
@@ -233,31 +224,37 @@ async def safe_generate_module(chunk):
 
 async def generate_modules_parallel(chunks):
     sent = 0
-    max_cards = 10
-    # Create actual tasks
-    tasks = [
-        asyncio.create_task(safe_generate_module(chunk))
-        for chunk in chunks
-    ]
+    max_cards = 15
+    tasks = [asyncio.create_task(safe_generate_module(chunk))for chunk in chunks]
 
-    # Process results as they finish
-    for future in asyncio.as_completed(tasks):
-        try:
-            result = await future
-        except Exception as e:
-            print("Error:", e)
-            continue
+    try:
+        for future in asyncio.as_completed(tasks):
+            try:
+                result = await future
+                if not result:
+                    continue
 
-        if not result:
-            continue
+                for card in result:
+                    if sent >= max_cards:
+                        yield "data: {\"done\": true}\n\n"
+                        return
+                    
+                    yield f"data: {json.dumps(card)}\n\n"
+                    sent += 1
+            
+            except Exception as e:
+                print(f"Task falied: {e}")
+                continue
 
-        for card in result:
+        yield "data: {\"done\": true}\n\n"
 
-            if sent >= max_cards:
-                return  # stop streaming
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
 
-            yield f"data: {json.dumps(card)}\n\n"
-            sent += 1
+            if task:
+                await asyncio.gather(*tasks, return_exceptions=True)
 
 def main():
     return
