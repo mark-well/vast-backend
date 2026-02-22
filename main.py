@@ -8,6 +8,7 @@ from typing import Annotated
 import asyncio
 from dotenv import load_dotenv
 import os
+import time
 
 load_dotenv()
 app = FastAPI()
@@ -43,6 +44,10 @@ async def generate_new_reviewer(file: UploadFile):
 async def get_chunks():
     return "Not Implemented yet"
     # return {"chunks": features.extract_chunks()}
+
+@app.get("/wakeup")
+async def wake_up_server():
+    return {"status": "awake"}
 
 async def generate_flashcards(pdf):
     chunks = features.extract_chunks(pdf);
