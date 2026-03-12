@@ -1,30 +1,26 @@
 import pdfplumber
 import os
 import json
-import os
 from dotenv import load_dotenv
 import re
 import httpx
 import asyncio
 import io
-import json
 
 # Load environment variables
 load_dotenv()
 api_token = os.getenv('OPEN_ROUTER_API')
 model = "stepfun/step-3.5-flash:free"
 semaphore = asyncio.Semaphore(5)
+client = httpx.AsyncClient(timeout=60.0)
 
 # Extract all the contents of a pdf file, per page and store it in a list
 def extract_page_chunk_pdf(pdf: bytes):
-    page_chunks = []
     with pdfplumber.open(io.BytesIO(pdf)) as pdf_file:
         for page in pdf_file.pages:
-            chunk = ""
-            for line in page.extract_text_lines():
-                chunk += line['text']
-            page_chunks.append(chunk)
-    return page_chunks
+            text = page.extract_text()
+            if text:
+                yield text
 
 # Clean json
 def parse_json(content):
@@ -58,14 +54,13 @@ Schema:
 Text:
 {chunk}
 """
-    client = httpx.AsyncClient(timeout=60.0)
     response = await client.post(
         url="https://openrouter.ai/api/v1/chat/completions",
         headers={
             "Authorization": f"Bearer {api_token}",
             "Content-Type": "application/json",
         },
-        data=json.dumps({
+        json={
             "model": f"{model}",
             "messages": [
                 {
@@ -78,7 +73,7 @@ Text:
                 "enabled": True,
                 "effort": "minimal"
             }
-        })
+        }
     )
 
     response = response.json()
@@ -86,39 +81,74 @@ Text:
     return parse_json(raw['content'])
 
 async def generate_flashcards_parallel(chunks):
-    sent = 0
     max_cards = 10
-    tasks = [asyncio.create_task(safe_generate_flashcard(chunk)) for chunk in chunks ]
+    concurrency = 5
+    sent = 0
+
+    active_tasks = set()
 
     try:
-        for future in asyncio.as_completed(tasks):
-            try:
-                result = await future
-                if not result:
-                    continue
+        for chunk in chunks:
+            # start new task
+            task = asyncio.create_task(generate_flashcard(chunk))
+            active_tasks.add(task)
 
-                for card in result:
-                    if sent >= max_cards:
-                        yield "data: {\"done\": true}\n\n"
-                        return
-                    
-                    yield f"data: {json.dumps(card)}\n\n"
-                    sent += 1
-                    await asyncio.sleep(0)
-            
-            except Exception as e:
-                print(f"Task falied: {e}")
-                continue
+            # enforce concurrency limit
+            if len(active_tasks) >= concurrency:
+                done, active_tasks = await asyncio.wait(
+                    active_tasks,
+                    return_when=asyncio.FIRST_COMPLETED
+                )
 
-        yield "data: {\"done\": true}\n\n"
+                for finished in done:
+                    try:
+                        result = await finished
+                        if not result:
+                            continue
+
+                        for card in result:
+                            if sent >= max_cards:
+                                return
+
+                            yield f"data: {json.dumps(card)}\n\n"
+                            sent += 1
+
+                    except Exception as e:
+                        print(f"Task failed: {e}")
+
+        # process remaining tasks
+        while active_tasks:
+            done, active_tasks = await asyncio.wait(
+                active_tasks,
+                return_when=asyncio.FIRST_COMPLETED
+            )
+
+            for finished in done:
+                try:
+                    result = await finished
+                    if not result:
+                        continue
+
+                    for card in result:
+                        if sent >= max_cards:
+                            return
+
+                        yield f"data: {json.dumps(card)}\n\n"
+                        sent += 1
+
+                except Exception as e:
+                    print(f"Task failed: {e}")
 
     finally:
-        for task in tasks:
-            if not task.done():
-                task.cancel()
+        # cancel anything still running
+        for t in active_tasks:
+            if not t.done():
+                t.cancel()
 
-            if task:
-                await asyncio.gather(*tasks, return_exceptions=True)
+        if active_tasks:
+            await asyncio.gather(*active_tasks, return_exceptions=True)
+
+        yield "data: {\"done\": true}\n\n"
 
 # Generate module blocks from chunks (uses AI)
 async def generate_module(chunk):
@@ -141,14 +171,13 @@ If no meaningful content exists, return:
 TEXT TO PROCESS:
 {chunk}
 """
-    client = httpx.AsyncClient(timeout=60.0)
     response = await client.post(
         url="https://openrouter.ai/api/v1/chat/completions",
         headers={
             "Authorization": f"Bearer {api_token}",
             "Content-Type": "application/json",
         },
-        data=json.dumps({
+        json={
             "model": f"{model}",
             "messages": [
                 {
@@ -161,7 +190,7 @@ TEXT TO PROCESS:
                 "enabled": True,
                 "effort": "minimal"
             }
-        })
+        }
     )
 
     response = response.json()
@@ -170,43 +199,70 @@ TEXT TO PROCESS:
 
 async def generate_modules_parallel(chunks):
     max_cards = 15
-    sent_count = 0
-    # Create tasks immediately to start parallel execution
-    tasks = [asyncio.create_task(safe_generate_module(chunk)) for chunk in chunks]
+    concurrency = 5
+    sent = 0
+
+    active_tasks = set()
 
     try:
-        # as_completed yields results as soon as they are ready
-        for future in asyncio.as_completed(tasks):
-            try:
-                result = await future
-                if not result:
-                    continue
+        for chunk in chunks:
+            # start new task
+            task = asyncio.create_task(generate_module(chunk))
+            active_tasks.add(task)
 
-                for card in result:
-                    if sent_count >= max_cards:
-                        return # Exit the generator; finally block handles cleanup
+            # enforce concurrency limit
+            if len(active_tasks) >= concurrency:
+                done, active_tasks = await asyncio.wait(
+                    active_tasks,
+                    return_when=asyncio.FIRST_COMPLETED
+                )
 
-                    yield f"data: {json.dumps(card)}\n\n"
-                    sent_count += 1
-                    await asyncio.sleep(0)
+                for finished in done:
+                    try:
+                        result = await finished
+                        if not result:
+                            continue
 
-            except Exception as e:
-                # Log individual task failures without crashing the whole stream
-                print(f"Task failed: {e}")
+                        for card in result:
+                            if sent >= max_cards:
+                                return
+
+                            yield f"data: {json.dumps(card)}\n\n"
+                            sent += 1
+
+                    except Exception as e:
+                        print(f"Task failed: {e}")
+
+        # process remaining tasks
+        while active_tasks:
+            done, active_tasks = await asyncio.wait(
+                active_tasks,
+                return_when=asyncio.FIRST_COMPLETED
+            )
+
+            for finished in done:
+                try:
+                    result = await finished
+                    if not result:
+                        continue
+
+                    for card in result:
+                        if sent >= max_cards:
+                            return
+
+                        yield f"data: {json.dumps(card)}\n\n"
+                        sent += 1
+
+                except Exception as e:
+                    print(f"Task failed: {e}")
 
     finally:
-        # --- Clean Shutdown ---
-        # 1. Cancel anything still running
-        for t in tasks:
+        # cancel anything still running
+        for t in active_tasks:
             if not t.done():
                 t.cancel()
-        
-        # 2. Wait for all tasks to acknowledge cancellation/finish
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-            
-        # 3. Always send a final closing signal
-        yield "data: {\"done\": true}\n\n"
 
-def main():
-    return
+        if active_tasks:
+            await asyncio.gather(*active_tasks, return_exceptions=True)
+
+        yield "data: {\"done\": true}\n\n"
