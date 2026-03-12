@@ -9,6 +9,7 @@ import asyncio
 from dotenv import load_dotenv
 import os
 import time
+from fastapi.concurrency import run_in_threadpool
 
 load_dotenv()
 app = FastAPI()
@@ -24,49 +25,46 @@ app.add_middleware(
 async def root():
     return "The sever is working here"
 
-@app.post("/generate")
-async def generate_new_reviewer(file: UploadFile):
+@app.post("/generate-modules")
+async def generate_module_blocks(file: UploadFile):
     if file.content_type != "application/pdf":
         raise HTTPException(status_code=400, detail="File must be a pdf")
 
     pdf_content = await file.read()
-    async with asyncio.TaskGroup() as tg:
-        module_task = tg.create_task(generate_module_block(pdf_content))
-        flashcard_task = tg.create_task(generate_flashcards(pdf_content))
-    
-    return {
-        "fileName": file.filename,
-        "flashcards": flashcard_task.result(),
-        "moduleBlocks": module_task.result()
-    }
+    chunks = await run_in_threadpool(features.extract_page_chunk_pdf, pdf_content)
+    return StreamingResponse(
+        features.generate_modules_parallel(chunks),
+        media_type="text/event-stream"
+    )
 
-@app.get("/chunks")
-async def get_chunks():
-    return "Not Implemented yet"
-    # return {"chunks": features.extract_chunks()}
+@app.post("/generate-flashcard")
+async def generate_flashcard(file: UploadFile):
+    if file.content_type != "application/pdf":
+        raise HTTPException(status_code=400, detail="File must be a pdf")
+
+    pdf_content = await file.read()
+    chunks = await run_in_threadpool(features.extract_page_chunk_pdf, pdf_content)
+    return StreamingResponse(
+        features.generate_flashcards_parallel(chunks),
+        media_type="text/event-stream"
+    )
 
 @app.get("/wakeup")
 async def wake_up_server():
     return {"status": "awake"}
 
-async def generate_flashcards(pdf):
-    chunks = features.extract_chunks(pdf);
-    print("chunks are loaded")
-    flashcards = []
-
-    async for module in features.generate_flashcards_parallel(chunks):
-        clean_data = module.replace("data: ", "").strip()
-        flashcards.append(features.parse_json(clean_data))
-
-    return flashcards
-
-async def generate_module_block(pdf):
-    chunks = features.extract_chunks(pdf);
-    print("chunks are loaded")
-    modules = []
-
-    async for module in features.generate_modules_parallel(chunks):
-        clean_data = module.replace("data: ", "").strip()
-        modules.append(features.parse_json(clean_data))
-
-    return modules
+@app.get("/module")
+def generate_module():
+    chunks = []
+    try:
+        with open("sample2.pdf", 'rb') as file:
+            chunks = features.extract_page_chunk_pdf(file.read())
+    except FileNotFoundError:
+        return {"message": "file not found"}
+    except PermissionError:
+        return {"message": "permission error"}
+    
+    return StreamingResponse(
+        features.generate_modules_parallel(chunks),
+        media_type="text/event-stream"
+    )
