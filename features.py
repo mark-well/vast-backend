@@ -7,79 +7,24 @@ import re
 import httpx
 import asyncio
 import io
+import json
 
 # Load environment variables
 load_dotenv()
-
 api_token = os.getenv('OPEN_ROUTER_API')
 model = "stepfun/step-3.5-flash:free"
-# model = "liquid/lfm-2.5-1.2b-thinking:free"
-# model = "arcee-ai/trinity-large-preview:free"
-semaphore = asyncio.Semaphore(10)
+semaphore = asyncio.Semaphore(5)
 
-# Extract from a pdf file
-def extract_text_from_pdf(pdf):
-    with pdfplumber.open(pdf) as pdf:
-        page = pdf.pages[0]
-        words = page.extract_words(
-            use_text_flow = True,
-            keep_blank_chars = False
-        )
-
-    for w in words:
-        print(w)
-
-# Extract a block of text from pdf
-def extract_block_of_text_from_pdf(pdf):
-    blocks=[]
-    with pdfplumber.open(io.BytesIO(pdf)) as pdff:
-        for page in pdff.pages:
+# Extract all the contents of a pdf file, per page and store it in a list
+def extract_page_chunk_pdf(pdf: bytes):
+    page_chunks = []
+    with pdfplumber.open(io.BytesIO(pdf)) as pdf_file:
+        for page in pdf_file.pages:
+            chunk = ""
             for line in page.extract_text_lines():
-                blocks.append({
-                    "text": line["text"],
-                    "top": line["top"],
-                    "size": line["chars"][0]["size"]
-                })
-    return blocks
-
-def chunk_blocks(blocks, max_char=1000, overlap=100):
-    chunks = []
-    current = ""
-
-    for block in blocks:
-        text = block["text"]
-
-        if len(current) + len(text) > max_char:
-            chunks.append(current)
-            overlap_text = current[-overlap:] if overlap > 0 else ""
-            current = overlap_text + text + "\n"
-        else:
-            current += text + "\n"
-
-    if current:
-        current = re.sub(r'\s+', ' ', current).strip()
-        chunks.append(current)
-    return chunks
-
-def create_output_file(file_name):
-    if not os.path.exists(file_name):
-        open(file_name, "x")
-
-# extract blocks of text then save to a file (for debugging only)
-def extract_block_text_save_to_file():
-    file_name = "blocks.json"
-    blocks = extract_block_of_text_from_pdf("sample.pdf")
-    create_output_file(file_name)
-
-    with open(file_name, "w") as f:
-        for block in blocks:
-            f.write(json.dumps(block))
-            f.write("\n")
-
-def extract_chunks(pdf):
-    blocks = extract_block_of_text_from_pdf(pdf)
-    chunks = chunk_blocks(blocks)
-    return chunks
+                chunk += line['text']
+            page_chunks.append(chunk)
+    return page_chunks
 
 # Clean json
 def parse_json(content):
@@ -89,6 +34,14 @@ def parse_json(content):
         match = re.search(r'\{.*\}', content, re.DOTALL)
         if match:
             return json.loads(match.group())
+
+async def safe_generate_flashcard(chunk):
+    async with semaphore:
+        return await generate_flashcard(chunk)
+
+async def safe_generate_module(chunk):
+    async with semaphore:
+        return await generate_module(chunk)
 
 # Generate flashcards from chunks (uses AI)
 async def generate_flashcard(chunk):
@@ -105,41 +58,37 @@ Schema:
 Text:
 {chunk}
 """
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.post(
-            url="https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {api_token}",
-                "Content-Type": "application/json",
-            },
-            data=json.dumps({
-                "model": f"{model}",
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": promt
-                    }
-                ],
-                "temperature": 0.0,
-                "reasoning": {
-                    "enabled": True,
-                    "effort": "minimal"
+    client = httpx.AsyncClient(timeout=60.0)
+    response = await client.post(
+        url="https://openrouter.ai/api/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer {api_token}",
+            "Content-Type": "application/json",
+        },
+        data=json.dumps({
+            "model": f"{model}",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": promt
                 }
-            })
-        )
+            ],
+            "temperature": 0.0,
+            "reasoning": {
+                "enabled": True,
+                "effort": "minimal"
+            }
+        })
+    )
 
-        response = response.json()
-        raw = response['choices'][0]['message']
-        return parse_json(raw['content'])
-
-async def safe_generate(chunk):
-    async with semaphore:
-        return await generate_flashcard(chunk)
+    response = response.json()
+    raw = response['choices'][0]['message']
+    return parse_json(raw['content'])
 
 async def generate_flashcards_parallel(chunks):
     sent = 0
     max_cards = 10
-    tasks = [asyncio.create_task(safe_generate(chunk)) for chunk in chunks ]
+    tasks = [asyncio.create_task(safe_generate_flashcard(chunk)) for chunk in chunks ]
 
     try:
         for future in asyncio.as_completed(tasks):
@@ -155,6 +104,7 @@ async def generate_flashcards_parallel(chunks):
                     
                     yield f"data: {json.dumps(card)}\n\n"
                     sent += 1
+                    await asyncio.sleep(0)
             
             except Exception as e:
                 print(f"Task falied: {e}")
@@ -191,43 +141,41 @@ If no meaningful content exists, return:
 TEXT TO PROCESS:
 {chunk}
 """
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.post(
-            url="https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {api_token}",
-                "Content-Type": "application/json",
-            },
-            data=json.dumps({
-                "model": f"{model}",
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": promt
-                    }
-                ],
-                "temperature": 0.0,
-                "reasoning": {
-                    "enabled": True,
-                    "effort": "minimal"
+    client = httpx.AsyncClient(timeout=60.0)
+    response = await client.post(
+        url="https://openrouter.ai/api/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer {api_token}",
+            "Content-Type": "application/json",
+        },
+        data=json.dumps({
+            "model": f"{model}",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": promt
                 }
-            })
-        )
+            ],
+            "temperature": 0.0,
+            "reasoning": {
+                "enabled": True,
+                "effort": "minimal"
+            }
+        })
+    )
 
-        response = response.json()
-        raw = response['choices'][0]['message']
-        return parse_json(raw['content'])
-
-async def safe_generate_module(chunk):
-    async with semaphore:
-        return await generate_module(chunk)
+    response = response.json()
+    raw = response['choices'][0]['message']
+    return parse_json(raw['content'])
 
 async def generate_modules_parallel(chunks):
-    sent = 0
     max_cards = 15
-    tasks = [asyncio.create_task(safe_generate_module(chunk))for chunk in chunks]
+    sent_count = 0
+    # Create tasks immediately to start parallel execution
+    tasks = [asyncio.create_task(safe_generate_module(chunk)) for chunk in chunks]
 
     try:
+        # as_completed yields results as soon as they are ready
         for future in asyncio.as_completed(tasks):
             try:
                 result = await future
@@ -235,26 +183,30 @@ async def generate_modules_parallel(chunks):
                     continue
 
                 for card in result:
-                    if sent >= max_cards:
-                        yield "data: {\"done\": true}\n\n"
-                        return
-                    
-                    yield f"data: {json.dumps(card)}\n\n"
-                    sent += 1
-            
-            except Exception as e:
-                print(f"Task falied: {e}")
-                continue
+                    if sent_count >= max_cards:
+                        return # Exit the generator; finally block handles cleanup
 
-        yield "data: {\"done\": true}\n\n"
+                    yield f"data: {json.dumps(card)}\n\n"
+                    sent_count += 1
+                    await asyncio.sleep(0)
+
+            except Exception as e:
+                # Log individual task failures without crashing the whole stream
+                print(f"Task failed: {e}")
 
     finally:
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-
-            if task:
-                await asyncio.gather(*tasks, return_exceptions=True)
+        # --- Clean Shutdown ---
+        # 1. Cancel anything still running
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+        
+        # 2. Wait for all tasks to acknowledge cancellation/finish
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+            
+        # 3. Always send a final closing signal
+        yield "data: {\"done\": true}\n\n"
 
 def main():
     return
