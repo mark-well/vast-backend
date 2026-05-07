@@ -24,8 +24,8 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 # Lightweight reliable models
 MODELS = [
-    "openai/gpt-4o-mini",
     "google/gemini-2.0-flash-001",
+    "openai/gpt-4o-mini",
     "anthropic/claude-3-haiku",
 ]
 
